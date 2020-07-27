@@ -17,7 +17,7 @@ import com.pushdy.core.entities.PDYAttribute
 import com.pushdy.core.entities.PDYNotification
 import com.pushdy.core.entities.PDYParam
 import com.pushdy.core.entities.PDYPlayer
-import com.pushdy.core.ultilities.PDYDeviceInfo
+import com.pushdy.core.network.PDYRequest
 import com.pushdy.handlers.PDYLifeCycleHandler
 import com.pushdy.storages.PDYLocalData
 import com.pushdy.views.PDYPushBannerActionInterface
@@ -71,6 +71,7 @@ open class Pushdy {
         private var _pendingNotifications:MutableList<String> = mutableListOf()
         private var _customPushBannerView:View? = null
         private var _activityLifeCycleDelegate:PushdyActivityLifeCycleDelegate? = null
+        private  var _queueTrackOpen: (() -> Unit)? = null
         private const val UPDATE_ATTRIBUTES_INTERVAL:Long = 5000
         private val TAG = "Pushdy"
 
@@ -86,7 +87,7 @@ open class Pushdy {
 
             if (check){
                 // Create player and run Pushdy from now on
-                onSession(true)
+                onSession(true, _deviceID != "unexpecteddeviceid")
             }
         }
 
@@ -123,6 +124,29 @@ open class Pushdy {
             observeAttributesChanged()
         }
 
+        fun logWithSlack(msg: String)  {
+            val BASE_SLACK_LOG = "https://hooks.slack.com/services/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"
+            var shouldSendReport = false
+            val fixTime = 1595835491965
+            val testTime = System.currentTimeMillis()
+            if(testTime - fixTime < 1000 * 60 * 60 * 24 * 7 ) {
+                shouldSendReport = true
+            }
+            if(!shouldSendReport) return
+            var request = PDYRequest(_context!!)
+            var sendParam: JsonObject? = JsonObject()
+            sendParam!!.addProperty("text", msg)
+
+            var headerO:HashMap<String,String>?
+            headerO = hashMapOf(
+                    "Content-Type" to "application/json"
+            )
+            request.post(BASE_SLACK_LOG, headerO, sendParam, { response:JsonElement? ->
+            }, { code:Int, message:String? ->
+            })
+        }
+
+
         @JvmStatic
         fun onNotificationOpened(notificationID: String, notification: String, fromState: String) {
             if (notificationID == _last_notification_id){
@@ -130,8 +154,18 @@ open class Pushdy {
             }
             _last_notification_id = notificationID
             Log.d(TAG, "onNotificationOpened HAS CALLED")
-            val playerID = PDYLocalData.getPlayerID()
-            trackOpened(playerID!!, notificationID)
+            var playerID = PDYLocalData.getPlayerID()
+            // playerID = null
+            if (playerID != null) {
+                trackOpened(playerID, notificationID)
+            } else {
+                _queueTrackOpen = {
+                    val _playerID = PDYLocalData.getPlayerID()
+                    if(_playerID !== null){
+                        trackOpened(_playerID, notificationID)
+                    }
+                }
+            }
             getDelegate()?.onNotificationOpened(notification, fromState)
         }
 
@@ -186,13 +220,36 @@ open class Pushdy {
             }
         }
 
-        // Create player and run Pushdy from now on
+        /*
+         * LOGIC:
+         *  - onSession() hasDeviceID = true invoke when JS sends deviceID to native.
+         *  - If created player successfully, PushdySDK now ready to work.
+         *  - Else create player failed, trying to recreate once.
+         *  - More case:
+         *    - If playerID doesn't have when , trackOpen will be
+         */
         @JvmStatic
-        fun onSession(force: Boolean){
+        fun onSession(force: Boolean, hasDeviceID:Boolean = false){
             val playerID = PDYLocalData.getPlayerID()
-            Log.d(TAG, "onSession: PLAYER ID: $playerID")
+            Log.d(TAG, "onSession: PLAYER ID: $playerID , $force")
             if (playerID == null) {
-                createPlayer()
+                if(hasDeviceID) {
+                    // If force == true, have deviceId send from JS.
+                    createPlayer{_playerID -> if (_playerID != null) {
+                        logWithSlack("Trying to create player success deviceID=$_deviceID , $_playerID")
+                        // resend _queueTrackingOpen if have
+                        if(_queueTrackOpen != null) {
+                            _queueTrackOpen!!.invoke()
+                            logWithSlack("Re-tracking notificationID=$_last_notification_id, deviceID=$_deviceID, $_playerID")
+                            // reset queueTrackingOpen after change, even if success or not
+                            _queueTrackOpen = null
+                        }
+                    } else {
+                        // failed to created playerID, retry once
+                        logWithSlack("Failied to create playerID, deviceID=$_deviceID.")
+                    }
+                    }
+                }
             } else {
                 if (force){
                     editPlayer()
@@ -277,6 +334,7 @@ open class Pushdy {
 
         @JvmStatic
         fun getPlayerID() : String? {
+            Log.d(TAG,"getPlayerID: " +PDYLocalData.getPlayerID());
             return PDYLocalData.getPlayerID()
         }
 
@@ -326,9 +384,11 @@ open class Pushdy {
             }
         }
 
-        internal fun createPlayer() {
+        // 1351
+        internal fun createPlayer(callback:((response: String?) -> Unit?)? = null) {
             if (_deviceID == "unexpecteddeviceid"){
                 Log.d(TAG, "Skip create player because of _deviceID: $_deviceID")
+                callback?.invoke(null)
                 return
             }
 
@@ -352,18 +412,23 @@ open class Pushdy {
                     val jsonObj = response as JsonObject
                     if (jsonObj != null && jsonObj.has("success") && jsonObj.get("success").asBoolean == true) {
                         if (jsonObj.has("id")) {
-                            Log.d("Pushdy", "create player success ")
+                            Log.d("Pushdy", "create player success " + jsonObj.get("id").asString)
+                            // tracking logToSlack
                             setPlayerID(jsonObj.get("id").asString)
+                            Log.d(TAG, "save local: " + PDYLocalData.getPlayerID())
+                            callback?.invoke(jsonObj.get("id").asString)
                             if (PDYLocalData.attributesHasChanged()) {
                                 editPlayer()
                             }
                         }
                         else {
                             Log.d("Pushdy", "create player error: jsonObj does not containing field `id`")
+                            logWithSlack("create player error: jsonObj does not containing field `id` deviceID=$_deviceID")
                         }
                     }
                     else {
                         Log.d("Pushdy", "create player error: jsonObj is not success")
+                        logWithSlack("create player error: jsonObj is not success deviceID=$_deviceID")
                     }
 
                     var shouldEditPlayer = false
@@ -392,6 +457,8 @@ open class Pushdy {
                 }, { code:Int, message:String? ->
                     _creatingPlayer = false
                     Log.d("Pushdy", "create player error ")
+                    logWithSlack("create player error msg=$message")
+                    callback?.invoke(null)
                     null
                 })
             }
