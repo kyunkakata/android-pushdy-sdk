@@ -87,7 +87,7 @@ open class Pushdy {
 
             if (check){
                 // Create player and run Pushdy from now on
-                onSession(true, _deviceID != "unexpecteddeviceid")
+               onSession(true, _deviceID != "unexpecteddeviceid")
             }
         }
 
@@ -125,11 +125,11 @@ open class Pushdy {
         }
 
         fun logWithSlack(msg: String)  {
-            val BASE_SLACK_LOG = "https://hooks.slack.com/services/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"
+            val BASE_SLACK_LOG = "https://hooks.slack.com/services/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"
             var shouldSendReport = false
-            val fixTime = 1595835491965
+            val fixTime = 1596158302557
             val testTime = System.currentTimeMillis()
-            if(testTime - fixTime < 1000 * 60 * 60 * 24 * 7 ) {
+            if(testTime - fixTime < 1000 * 60 * 60 * 24 * 7 * 4) {
                 shouldSendReport = true
             }
             if(!shouldSendReport) return
@@ -385,10 +385,10 @@ open class Pushdy {
         }
 
         // 1351
-        internal fun createPlayer(callback:((response: String?) -> Unit?)? = null) {
+        internal fun createPlayer(onCompleted:((playerID: String?) -> Unit?)? = null) {
             if (_deviceID == "unexpecteddeviceid"){
                 Log.d(TAG, "Skip create player because of _deviceID: $_deviceID")
-                callback?.invoke(null)
+                onCompleted?.invoke(null)
                 return
             }
 
@@ -416,7 +416,7 @@ open class Pushdy {
                             // tracking logToSlack
                             setPlayerID(jsonObj.get("id").asString)
                             Log.d(TAG, "save local: " + PDYLocalData.getPlayerID())
-                            callback?.invoke(jsonObj.get("id").asString)
+                            onCompleted?.invoke(jsonObj.get("id").asString)
                             if (PDYLocalData.attributesHasChanged()) {
                                 editPlayer()
                             }
@@ -458,7 +458,7 @@ open class Pushdy {
                     _creatingPlayer = false
                     Log.d("Pushdy", "create player error ")
                     logWithSlack("create player error msg=$message")
-                    callback?.invoke(null)
+                    onCompleted?.invoke(null)
                     null
                 })
             }
